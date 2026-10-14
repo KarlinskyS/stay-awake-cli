@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ieffai/stay-awake-cli/internal/agent"
 )
 
 type fakeActivity struct {
@@ -125,6 +127,88 @@ func TestRunnerTickReturnsMoverError(t *testing.T) {
 	err := runner.tick(context.Background())
 	if !errors.Is(err, moverErr) {
 		t.Fatalf("tick() error = %v, want mover error", err)
+	}
+}
+
+type scriptedInspector struct {
+	snaps []agent.Snapshot
+	i     int
+}
+
+func (s *scriptedInspector) Snapshot(kinds []agent.Kind) (agent.Snapshot, error) {
+	if s.i < len(s.snaps) {
+		snap := s.snaps[s.i]
+		s.i++
+		return snap, nil
+	}
+	return s.snaps[len(s.snaps)-1], nil
+}
+
+func TestRunnerStopsWhenWatchedAgentsFinish(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 21, 13, 0, 0, 0, time.UTC)
+	runner := appRunner{
+		cfg: Config{
+			Interval:  time.Millisecond,
+			Distance:  1,
+			Wait:      []agent.Kind{agent.KindClaude},
+			WaitStart: time.Minute,
+			WaitIdle:  0,
+		},
+		out:      &out,
+		activity: fakeActivity{idleFor: time.Minute, trusted: true},
+		mover:    &fakeMover{},
+		inspector: &scriptedInspector{snaps: []agent.Snapshot{
+			{Working: []agent.Target{{Kind: agent.KindClaude, PID: 42, Detail: "busy"}}},
+			{},
+		}},
+		now: func() time.Time { return now },
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	code, err := runner.run(ctx)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "waiting on claude pid 42 (busy)") {
+		t.Fatalf("log = %q, want working agent log", out.String())
+	}
+	if !strings.Contains(out.String(), "agents finished - stopping") {
+		t.Fatalf("log = %q, want finished log", out.String())
+	}
+}
+
+func TestRunnerStopsWhenNoWorkingAgentAppears(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 21, 13, 0, 0, 0, time.UTC)
+	runner := appRunner{
+		cfg: Config{
+			Interval:  time.Minute,
+			Distance:  1,
+			Wait:      []agent.Kind{agent.KindClaude},
+			WaitStart: 0,
+			WaitIdle:  0,
+		},
+		out:       &out,
+		activity:  fakeActivity{idleFor: time.Minute, trusted: true},
+		mover:     &fakeMover{},
+		inspector: &scriptedInspector{snaps: []agent.Snapshot{{}}},
+		now:       func() time.Time { return now },
+	}
+
+	code, err := runner.run(context.Background())
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "no working agent found - stopping") {
+		t.Fatalf("log = %q, want no-agent log", out.String())
 	}
 }
 
