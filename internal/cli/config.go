@@ -8,25 +8,34 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ieffai/stay-awake-cli/internal/agent"
 )
 
 const (
-	DefaultInterval = 60 * time.Second
-	DefaultDistance = 1
+	DefaultInterval  = 60 * time.Second
+	DefaultDistance  = 1
+	DefaultWaitStart = 10 * time.Minute
+	DefaultWaitIdle  = 60 * time.Second
 )
 
 type Config struct {
-	Interval time.Duration
-	Distance int
-	Always   bool
-	Verbose  bool
-	Version  bool
+	Interval  time.Duration
+	Distance  int
+	Always    bool
+	Verbose   bool
+	Version   bool
+	Wait      []agent.Kind
+	WaitStart time.Duration
+	WaitIdle  time.Duration
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Interval: DefaultInterval,
-		Distance: DefaultDistance,
+		Interval:  DefaultInterval,
+		Distance:  DefaultDistance,
+		WaitStart: DefaultWaitStart,
+		WaitIdle:  DefaultWaitIdle,
 	}
 }
 
@@ -40,6 +49,12 @@ func ParseArgs(args []string, out io.Writer, version string) (Config, error) {
 	fs.BoolVar(&cfg.Always, "always", cfg.Always, "move cursor every interval regardless of user activity")
 	fs.BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "print detailed diagnostic logs")
 	fs.BoolVar(&cfg.Version, "version", false, "print version and exit")
+	waitAgent := fs.Bool("wait-agent", false, "stop when Claude, Grok, and Codex finish their current work")
+	waitClaude := fs.Bool("wait-claude", false, "stop when Claude Code finishes its current work")
+	waitGrok := fs.Bool("wait-grok", false, "stop when Grok finishes its current work")
+	waitCodex := fs.Bool("wait-codex", false, "stop when Codex finishes its current work")
+	waitStart := fs.String("wait-start", cfg.WaitStart.String(), "how long to wait for a working agent to appear")
+	waitIdle := fs.String("wait-idle", cfg.WaitIdle.String(), "how long agents must stay idle before stay exits")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: stay [options]\n\nOptions:\n")
 		fs.PrintDefaults()
@@ -61,7 +76,55 @@ func ParseArgs(args []string, out io.Writer, version string) (Config, error) {
 		return cfg, errors.New("--distance must be greater than 0")
 	}
 
+	cfg.Wait = collectWaitKinds(*waitAgent, *waitClaude, *waitGrok, *waitCodex)
+	cfg.WaitStart, err = parseNonNegativeDuration("wait-start", *waitStart)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.WaitIdle, err = parseNonNegativeDuration("wait-idle", *waitIdle)
+	if err != nil {
+		return cfg, err
+	}
+
 	return cfg, nil
+}
+
+func collectWaitKinds(waitAgent, waitClaude, waitGrok, waitCodex bool) []agent.Kind {
+	if waitAgent {
+		return agent.AllKinds()
+	}
+	var kinds []agent.Kind
+	if waitClaude {
+		kinds = append(kinds, agent.KindClaude)
+	}
+	if waitGrok {
+		kinds = append(kinds, agent.KindGrok)
+	}
+	if waitCodex {
+		kinds = append(kinds, agent.KindCodex)
+	}
+	return kinds
+}
+
+func parseNonNegativeDuration(flagName string, value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("--%s must not be empty", flagName)
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds < 0 {
+			return 0, fmt.Errorf("--%s must not be negative", flagName)
+		}
+		return time.Duration(seconds) * time.Second, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --%s %q: use values like 60s, 1m, or 0s", flagName, value)
+	}
+	if duration < 0 {
+		return 0, fmt.Errorf("--%s must not be negative", flagName)
+	}
+	return duration, nil
 }
 
 func ParseInterval(value string) (time.Duration, error) {

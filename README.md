@@ -43,13 +43,14 @@ does-not-use:
   - launch agent
   - AppleScript
   - external GUI automation
-runtime-model: long-running foreground terminal process until Ctrl+C, SIGINT, or SIGTERM
+runtime-model: long-running foreground terminal process until Ctrl+C, SIGINT, SIGTERM, or optional --wait-agent idle stop
 default-interval: 60s
 default-distance: 1 display point
 primary-use-cases:
   - macOS idle prevention
   - transparent CLI mouse mover
   - foreground terminal alternative to GUI mouse mover apps
+  - keep Mac awake until Claude, Grok, or Codex finishes an overnight task
 ```
 
 Search keywords: `macOS idle prevention`, `mouse mover CLI`, `keep Mac awake by mouse movement`, `Core Graphics mouse event`, `Accessibility permission`, `Apple Silicon CLI`, `no GUI mouse mover`, `foreground terminal process`.
@@ -174,6 +175,10 @@ stay --always
 stay --verbose
 stay --version
 stay --help
+stay --wait-agent
+stay --wait-claude
+stay --wait-codex
+stay --wait-grok
 ```
 
 | Option | Description |
@@ -184,6 +189,12 @@ stay --help
 | `--verbose` | Print more detailed diagnostics. |
 | `--version` | Print version and exit. |
 | `--help` | Print usage and exit. |
+| `--wait-agent` | Keep the session awake until Claude, Grok, and Codex finish their current work, then exit. |
+| `--wait-claude` | Same, watching only Claude Code. |
+| `--wait-grok` | Same, watching only Grok. |
+| `--wait-codex` | Same, watching only Codex. |
+| `--wait-start` | How long to wait for a working agent to appear. Default: `10m`. |
+| `--wait-idle` | How long agents must stay idle before `stay` exits. Default: `60s`. |
 
 Examples:
 
@@ -192,7 +203,39 @@ stay --interval 30s
 stay --interval 5s --verbose
 stay --distance 2
 stay --always
+stay --wait-claude
+stay --wait-agent --wait-idle 30s
 ```
+
+## Wait for an agent
+
+`stay` can keep the Mac awake for an overnight Claude, Grok, or Codex task, then exit so the machine can sleep.
+
+Start the task, then in another terminal:
+
+```bash
+stay --wait-claude
+```
+
+Watch every supported agent:
+
+```bash
+stay --wait-agent
+```
+
+Combine specific agents:
+
+```bash
+stay --wait-claude --wait-grok
+```
+
+`stay` watches whether the agent is still working, not whether the process is still running. Interactive CLIs sit at a prompt after a turn finishes; that idle prompt is the stop signal. Codex background `app-server` daemons are ignored.
+
+A Claude session is working while its `~/.claude/sessions/<pid>.json` status is anything other than `idle` (`busy`, `shell`, `waiting`, ...). Grok is working until `events.jsonl` records `turn_ended`. Codex is working while a recent rollout file's last turn boundary is `task_started`.
+
+If no working agent is visible yet, `stay` waits up to `--wait-start` (default 10 minutes) for one to appear. After work is seen and then goes idle, `stay` waits `--wait-idle` (default 60 seconds) so a brief pause between tools does not look like a finished task. Then it logs `agents finished - stopping` and exits.
+
+A permission prompt counts as still working. If the overnight task stops to ask for approval, `stay` keeps the session awake until you answer or stop it with Ctrl+C.
 
 ## Accessibility Permission
 
@@ -320,6 +363,7 @@ Project layout:
 .
 ├── cmd/stay/main.go
 ├── internal/activity
+├── internal/agent
 ├── internal/cli
 ├── internal/mover
 ├── go.mod
@@ -332,6 +376,7 @@ Manual smoke checklist:
 
 - `stay` starts a long-running foreground process.
 - Terminal output clearly shows that the process is active.
+- `stay --wait-claude` exits after Claude goes idle.
 - `Ctrl+C` stops the process and logs shutdown.
 - `SIGTERM` stops the process and logs shutdown.
 - Each actual synthetic movement is logged.
